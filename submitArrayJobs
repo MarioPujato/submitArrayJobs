@@ -1,0 +1,282 @@
+#!/usr/bin/perl -w
+use strict;
+use Getopt::Std;
+use Cwd;
+
+my $prog_name = $0;
+$prog_name    =~ s/^.*\///;
+$prog_name    =~ s/_v(\d+\.\d+)//;
+my $version   = $1 || '1.2.0';
+my $created   = '032415';
+my $modified  = '090418';
+
+my %options;
+getopts( 'C:A:W:M:n:dt', \%options );
+my $curDir    = getcwd;
+
+# Set default values
+$options{'W'}  = $options{'W'} || '1:00';
+$options{'M'}  = $options{'M'} ||  2000;
+$options{'n'}  = $options{'n'} ||  1;
+
+# Set default values for switches
+$options{'t'}  = $options{'t'} ||  0;
+$options{'d'}  = $options{'d'} ||  0;
+
+# Die with usage if no arguments are provided
+Messages::die_with_usage( $prog_name, $version, $created, $modified )
+	unless (
+		$options{'C'} and
+		$options{'A'}
+	);
+Messages::print_options( \%options );
+
+my $comm_file  = $options{'C'};
+my $array_file = $options{'A'};
+
+# Get base names
+my( $cfdir, $cfname ) = brake_apart_name( $comm_file );
+my( $afdir, $afname ) = brake_apart_name( $array_file );
+
+# Get date
+my $curDate = `date +%D`; chomp $curDate;
+$curDate    =~ s/\///g;
+
+open( ARR, $array_file ) or
+	die "ERROR: Could not read array file: $array_file\n";
+`mkdir -p $curDir/logs`;
+
+while( my $array_line = <ARR> ){
+	next if $array_line =~ /^#|^[\s\t]*$/;
+	chomp $array_line;
+
+	my @split   = split( "\t", $array_line );
+	my $jobname = shift @split;
+
+	open( COM, $comm_file )     or
+		die "ERROR: Could no open template file $comm_file\n";
+	open( OUT, ">$jobname.sh" ) or
+		die "ERROR: Could not create file $jobname.sh. Check names in first column of the array file\n";
+
+	# Add header to OUT
+	my $header = get_header(
+		minutes    => $options{'W'},
+		processors => $options{'n'},
+		memory     => $options{'M'},
+		stdout     => "$curDir/logs/$jobname.stdout",
+		stderr     => "$curDir/logs/$jobname.stderr",
+		jobname    => $jobname,
+		not_tiled  => $options{'t'},
+	);
+	print OUT join( "\n", @$header ), "\n";
+
+	# Remove existing error logs
+	`rm -f "$curDir/logs/$jobname.std*" `;
+
+	while( my $line = <COM> ){
+		for( my $j = 1; $j <= scalar @split; $j++ ){
+			my $var = $split[$j-1];
+			my( $vardir, $varbase ) = brake_apart_name( $var );
+
+			$line =~ s/DATE/$curDate/g      if $curDate;
+			$line =~ s/CURDIR/$curDir/g     if $curDir;
+			$line =~ s/JOBNAME/$jobname/g   if $jobname;
+			$line =~ s/VAR$j/$var/g         if $var;
+			$line =~ s/VARDIR$j/$vardir/g   if $vardir;
+			$line =~ s/VARBASE$j/$varbase/g if $varbase;
+			$line =~ s/PROC/$options{'n'}/g if $options{'n'};
+		}
+		print OUT $line;
+	}
+	close COM;
+	close OUT;
+
+	# Find running or queued jobs
+	my $qJob = `bjobs 2> /dev/null | grep -P "\\s$jobname\\s" | wc -l`;
+	chomp $qJob;
+
+	# Run job if it's not already running or in the queue
+	if( $qJob ){
+		# Do not submit job
+		print STDERR "Job $jobname already exists in queue\n";
+	}
+	else{
+		# Submit job
+		if( $options{'d'} ){
+			print STDERR "Job $jobname. Script created (dry run)\n";
+		}
+		else{
+#			`LSB_JOB_REPORT_MAIL=N bsub -U weirauchLab < $jobname.sh`;
+			`LSB_JOB_REPORT_MAIL=N bsub < $jobname.sh`;
+			`rm -f $jobname.sh`;
+			print STDERR "Job $jobname submitted\n";
+		}
+	}
+}
+close ARR;
+
+exit;
+
+#-------------------------------------------------------------------------------
+sub brake_apart_name 
+{
+	my $file     = shift;
+	my $tmp_file = $file;
+	my $dir      = 0;
+	my $base     = $tmp_file;
+	my $ext      = 0;
+
+	# Retrieve file name with full path
+	if( -e $file ){
+		$tmp_file = `readlink -f $file`;
+		$tmp_file =~ s/.gz$//;
+
+		# Extract full path, base name and extension
+		if( $file =~ /\.\w+$/ ){
+			$tmp_file =~ /^(.*)\/(.+)\.(\w+)$/;
+			$dir      = $1 || 0;
+			$base     = $2 || 0;
+			$ext      = $3 || 0;
+		}
+		else{
+			$tmp_file =~ /^(.*)\/(.+)$/;
+			$dir      = $1 || 0;
+			$base     = $2 || 0;
+		}
+	}
+	else{
+		# Extract full path, base name and extension
+		if( $file =~ /\.\w+$/ and $file =~ /^.*\// ){
+			$tmp_file =~ /^(.*)\/(.+)\.(\w+)$/;
+			$dir      = $1 || 0;
+			$base     = $2 || 0;
+			$ext      = $3 || 0;
+		}
+		elsif( $file =~ /^.*\// ){
+			$tmp_file =~ /^(.*)\/(.+)$/;
+			$dir      = $1 || 0;
+			$base     = $2 || 0;
+		}
+	}
+
+	return(
+	 	$dir,
+		$base,
+		$ext
+	);
+}
+
+sub get_header
+{
+	my %arguments  = @_;
+	my $minutes    = $arguments{'minutes'};
+	my $processors = $arguments{'processors'};
+	my $stdout     = $arguments{'stdout'};
+	my $stderr     = $arguments{'stderr'};
+	my $jobname    = $arguments{'jobname'};
+	my $memory     = $arguments{'memory'};
+	my $not_tiled  = $arguments{'not_tiled'};
+
+	my @header     = (
+	 	"#!/bin/bash",
+		"#BSUB -W $minutes",
+		"#BSUB -M $memory",
+		"#BSUB -n $processors",
+		"#BSUB -o $stdout",
+		"#BSUB -e $stderr",
+		"#BSUB -J \"$jobname\"",
+	);
+
+	unless( $not_tiled ){
+		push( @header, "#BSUB -R \"span[ptile=$processors]\"" );
+	}
+
+	push( @header, "\n" );
+
+	return \@header;
+}
+
+#-------------------------------------------------------------------------------
+package Messages;
+use warnings;
+use strict;
+
+sub print_options
+{
+	my $options = shift;
+
+	print STDERR "\e[1mOPTIONS:\e[0m\n";
+	my @sorted = sort{ $a cmp $b } keys %$options;
+
+	for my $var ( @sorted ){
+		my $value = $options->{$var};
+		print STDERR "  $var:  $value\n";
+	}
+
+	print STDERR "\n";
+
+	return 1;
+}
+
+sub die_with_usage
+{
+	my $prog_name = shift;
+	my $version   = shift;
+	my $created   = shift;
+	my $modified  = shift;
+
+	die "\n\e[0;36m>> Written by Mario Pujato <<\n
+-Created:  $created
+-Modified: $modified
+-Version:  $version\n
+\e[1;33mUSAGE: $prog_name [options] <arguments>\e[0m\n
+[options]
+
+      -C Commands file (file with commands that you wish to run, with no
+          submission header)
+         Allowed variables:
+           DATE     is the current date in the format: MMDDYY
+           CURDIR   is the current directory
+           PROC     is the number of processors specified in the -n variable
+           JOBNAME  is the first field in the array file
+           VAR1     is the first field after the JOBNAME
+           VAR2     is the second field after the JOBNAME
+           VARn     is the nth field after the JOBNAME
+           VARDIRn  is the directory component of the file name in the nth field
+                     after the JOBNAME
+           VARBASEn is the directory component of the file name in the nth field
+                     after the JOBNAME
+
+      -A Array file
+         Each line corresponds to a different job (jobnames should be unique)
+         Fields should be TAB-separated
+         Example lines:
+         jobname1	variable1	variable2	...
+         jobname2	variable1	variable2	...
+
+      -W Number of requested time before killing the job
+         (default: 1:00 -h:mm-)
+
+      -n Number of requested processors
+         (default: 1)
+
+      -M Requested memory in MB
+         (default: 2000 -2GB-)
+
+      -t (switch) Deactivate job tiling
+         By default, the job is submitted to one host that has the number of
+          requested processors
+         WARNING: If there is no host with the number of requested processors,
+          the job will be pending forever!
+
+      -d (switch) Dry run. Scripts are created but not submitted and/or deleted
+         Use this option if you want to inspect the submission scripts prior to
+          submission
+
+NOTE:
+  Switches do not require you to input any value. For example, if you want to
+   activate the \"Dry run\" option, you simply throw a \"-d\" with your
+   arguments\n\n";
+}
+
+1;
