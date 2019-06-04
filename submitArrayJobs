@@ -6,9 +6,9 @@ use Cwd;
 my $prog_name = $0;
 $prog_name    =~ s/^.*\///;
 $prog_name    =~ s/_v(\d+\.\d+)//;
-my $version   = $1 || '1.2.0';
+my $version   = $1 || '1.2.2';
 my $created   = '032415';
-my $modified  = '090418';
+my $modified  = '040219';
 
 my %options;
 getopts( 'C:A:W:M:n:dt', \%options );
@@ -120,49 +120,27 @@ exit;
 #-------------------------------------------------------------------------------
 sub brake_apart_name 
 {
-	my $file     = shift;
-	my $tmp_file = $file;
-	my $dir      = 0;
-	my $base     = $tmp_file;
-	my $ext      = 0;
+	my $file = shift;
+	my $dir  = '';
+	my $base = $file;
+	my $ext  = '';
 
 	# Retrieve file name with full path
 	if( -e $file ){
-		$tmp_file = `readlink -f $file`;
-		$tmp_file =~ s/.gz$//;
-
-		# Extract full path, base name and extension
-		if( $file =~ /\.\w+$/ ){
-			$tmp_file =~ /^(.*)\/(.+)\.(\w+)$/;
-			$dir      = $1 || 0;
-			$base     = $2 || 0;
-			$ext      = $3 || 0;
-		}
-		else{
-			$tmp_file =~ /^(.*)\/(.+)$/;
-			$dir      = $1 || 0;
-			$base     = $2 || 0;
-		}
-	}
-	else{
-		# Extract full path, base name and extension
-		if( $file =~ /\.\w+$/ and $file =~ /^.*\// ){
-			$tmp_file =~ /^(.*)\/(.+)\.(\w+)$/;
-			$dir      = $1 || 0;
-			$base     = $2 || 0;
-			$ext      = $3 || 0;
-		}
-		elsif( $file =~ /^.*\// ){
-			$tmp_file =~ /^(.*)\/(.+)$/;
-			$dir      = $1 || 0;
-			$base     = $2 || 0;
-		}
+		$file  = `readlink -f $file` if -e $file; chomp $file;
+		$dir   = `dirname $file`; chomp $dir;
+		$file  =~ s/(.gz)$//;
+		my $gz = $1 || '';
+		$file  =~ /\.(\w+)$/;
+		$ext   = $1 || '';
+		$ext  .= $gz if $gz;
+		$base  = `basename $file .$ext`; chomp $base;
 	}
 
 	return(
 	 	$dir,
 		$base,
-		$ext
+		$ext,
 	);
 }
 
